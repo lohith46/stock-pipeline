@@ -1,0 +1,27 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  # Dagster webserver metrics (exposed by dagster-prometheus integration)
+  - job_name: dagster
+    static_configs:
+      - targets: ["dagster-webserver:3010"]
+    metrics_path: /metrics
+
+  # Prometheus self-monitoring
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  # Kafka JMX metrics (via JMX exporter sidecar if added later)
+  - job_name: kafka
+    static_configs:
+      - targets: ["kafka:9101"]
+    honor_labels: true
+
+  # MinIO metrics
+  - job_name: minio
+    metrics_path: /minio/v2/metrics/cluster
+    static_configs:
+      - targets: ["minio:9000"]
