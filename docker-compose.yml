@@ -63,6 +63,60 @@ services:
       echo 'Bucket ready'
       "
 
+  # ── DE-Stock exchange simulator (Rust WebSocket server) ───────────────────
+  mock-stock:
+    build:
+      context: ../../mock-stock        # path relative to docker-compose.yml
+      dockerfile: Dockerfile
+    container_name: mock-stock
+    ports:
+      - "8080:8080"
+    # Override any config values via env vars passed as CLI args is not
+    # supported by mock-stock; the config file is the single source of truth.
+    # pipeline.toml already sets websocket_addr = "0.0.0.0" so Docker can
+    # reach it via the container name.
+    volumes:
+      - ../../mock-stock/config:/config:ro
+    command: ["/config/pipeline.toml"]
+    healthcheck:
+      test: >
+        ["CMD", "sh", "-c",
+         "apt-get install -y netcat-openbsd -qq 2>/dev/null; nc -z localhost 8080"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s   # give Rust build/startup time
+
+  # ── WebSocket → Kafka bridge ──────────────────────────────────────────────
+  ws-bridge:
+    image: python:3.11-slim
+    container_name: ws-kafka-bridge
+    working_dir: /app
+    environment:
+      # mock-stock is reachable by service name inside Docker network
+      WS_URL:                  "ws://mock-stock:8080"
+      KAFKA_BOOTSTRAP_SERVERS: "kafka:9092"
+      RECONNECT_DELAY_S:       "5"
+      LOG_INTERVAL_N:          "1000"
+      # Topic overrides (optional — these are already the defaults)
+      TOPIC_TRADES:    "stock.trades"
+      TOPIC_ORDERS:    "stock.orders"
+      TOPIC_QUOTES:    "stock.quotes"
+      TOPIC_ORDERBOOK: "stock.orderbook"
+      TOPIC_STATS:     "stock.stats"
+      TOPIC_HALTS:     "stock.halts"
+      TOPIC_AGENTS:    "stock.agents"
+    volumes:
+      - .:/app
+    command: >
+      sh -c "pip install -e '.[dev]' -q &&
+             python dagster_stock/utils/ws_to_kafka.py"
+    depends_on:
+      kafka:
+        condition: service_healthy
+      mock-stock:
+        condition: service_healthy
+
   # ── Prometheus ────────────────────────────────────────────────────────────
   prometheus:
     image: prom/prometheus:v2.51.0
@@ -100,12 +154,13 @@ services:
     ports:
       - "3010:3010"
     environment:
-      DAGSTER_HOME: /app/.dagster
+      DAGSTER_HOME:            /app/.dagster
       KAFKA_BOOTSTRAP_SERVERS: kafka:9092
-      MINIO_ENDPOINT: http://minio:9000
-      MINIO_ACCESS_KEY: minioadmin
-      MINIO_SECRET_KEY: minioadmin
-      STORAGE_BUCKET: stock-lake
+      MINIO_ENDPOINT:          http://minio:9000
+      MINIO_ACCESS_KEY:        minioadmin
+      MINIO_SECRET_KEY:        minioadmin
+      STORAGE_BUCKET:          stock-lake
+      STORAGE_BACKEND:         s3
     volumes:
       - .:/app
       - dagster_home:/app/.dagster
@@ -115,18 +170,21 @@ services:
     depends_on:
       kafka:
         condition: service_healthy
+      ws-bridge:
+        condition: service_started
 
   dagster-daemon:
     image: python:3.11-slim
     container_name: dagster-daemon
     working_dir: /app
     environment:
-      DAGSTER_HOME: /app/.dagster
+      DAGSTER_HOME:            /app/.dagster
       KAFKA_BOOTSTRAP_SERVERS: kafka:9092
-      MINIO_ENDPOINT: http://minio:9000
-      MINIO_ACCESS_KEY: minioadmin
-      MINIO_SECRET_KEY: minioadmin
-      STORAGE_BUCKET: stock-lake
+      MINIO_ENDPOINT:          http://minio:9000
+      MINIO_ACCESS_KEY:        minioadmin
+      MINIO_SECRET_KEY:        minioadmin
+      STORAGE_BUCKET:          stock-lake
+      STORAGE_BACKEND:         s3
     volumes:
       - .:/app
       - dagster_home:/app/.dagster

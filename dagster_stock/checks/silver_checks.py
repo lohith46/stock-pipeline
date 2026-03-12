@@ -2,12 +2,14 @@
 Silver layer @asset_check functions.
 
 Checks:
-- silver_trades_no_duplicates     — (trade_id, symbol, timestamp) must be unique
-- silver_trades_no_nulls          — critical columns must have no nulls
-- silver_trades_price_bounds      — price within [0.01, 1_000_000]
-- silver_trades_timestamp_order   — timestamps must be non-decreasing per symbol
+- silver_trades_no_duplicates      — (trade_id, symbol, timestamp) must be unique
+- silver_trades_no_nulls           — critical columns must have no nulls
+- silver_trades_price_bounds       — price within [0.01, 1_000_000]
+- silver_trades_timestamp_order    — timestamps non-decreasing per symbol
+- silver_trades_side_valid         — side in {"buy", "sell"}
 - silver_quotes_spread_non_negative — spread_bps >= 0
 - silver_orders_fill_status_valid  — fill_status only contains known values
+- silver_orders_agent_type_valid   — agent_type only contains known values
 """
 
 import pandas as pd
@@ -18,8 +20,12 @@ from dagster_stock.assets.silver.quotes import silver_quotes
 from dagster_stock.assets.silver.orders import silver_orders
 from dagster_stock.resources.storage_resource import StorageResource
 
-KNOWN_FILL_STATUSES = {"filled", "partial_fill", "cancelled", "open", "unknown"}
+KNOWN_FILL_STATUSES = {"open", "cancelled"}
+KNOWN_AGENT_TYPES   = {"retail", "institutional", "market_maker", "hft", "unknown"}
+KNOWN_SIDES         = {"buy", "sell"}
 
+
+# ── silver_trades checks ──────────────────────────────────────────────────────
 
 @asset_check(asset=silver_trades, description="No duplicate (trade_id, symbol, timestamp) rows.")
 def silver_trades_no_duplicates(storage: StorageResource) -> AssetCheckResult:
@@ -71,6 +77,22 @@ def silver_trades_timestamp_order(storage: StorageResource) -> AssetCheckResult:
     )
 
 
+@asset_check(asset=silver_trades, description="side column only contains 'buy' or 'sell'.")
+def silver_trades_side_valid(storage: StorageResource) -> AssetCheckResult:
+    df = storage.read_parquet(layer="silver", table="trades")
+    if "side" not in df.columns:
+        return AssetCheckResult(passed=False, severity=AssetCheckSeverity.ERROR,
+                                metadata={"reason": "side column missing"})
+    invalid = (~df["side"].isin(KNOWN_SIDES)).sum()
+    return AssetCheckResult(
+        passed=invalid == 0,
+        severity=AssetCheckSeverity.ERROR,
+        metadata={"invalid_side_count": int(invalid)},
+    )
+
+
+# ── silver_quotes checks ──────────────────────────────────────────────────────
+
 @asset_check(asset=silver_quotes, description="spread_bps >= 0 for all quotes.")
 def silver_quotes_spread_non_negative(storage: StorageResource) -> AssetCheckResult:
     df = storage.read_parquet(layer="silver", table="quotes")
@@ -81,6 +103,8 @@ def silver_quotes_spread_non_negative(storage: StorageResource) -> AssetCheckRes
         metadata={"negative_spread_count": int(neg_spread)},
     )
 
+
+# ── silver_orders checks ──────────────────────────────────────────────────────
 
 @asset_check(asset=silver_orders, description="fill_status only contains known values.")
 def silver_orders_fill_status_valid(storage: StorageResource) -> AssetCheckResult:
@@ -93,11 +117,24 @@ def silver_orders_fill_status_valid(storage: StorageResource) -> AssetCheckResul
     )
 
 
+@asset_check(asset=silver_orders, description="agent_type only contains known values.")
+def silver_orders_agent_type_valid(storage: StorageResource) -> AssetCheckResult:
+    df = storage.read_parquet(layer="silver", table="orders")
+    unknown = (~df["agent_type"].isin(KNOWN_AGENT_TYPES)).sum()
+    return AssetCheckResult(
+        passed=unknown == 0,
+        severity=AssetCheckSeverity.WARN,
+        metadata={"unknown_agent_type_count": int(unknown)},
+    )
+
+
 silver_checks = [
     silver_trades_no_duplicates,
     silver_trades_no_nulls,
     silver_trades_price_bounds,
     silver_trades_timestamp_order,
+    silver_trades_side_valid,
     silver_quotes_spread_non_negative,
     silver_orders_fill_status_valid,
+    silver_orders_agent_type_valid,
 ]

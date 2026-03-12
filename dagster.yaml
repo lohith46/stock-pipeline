@@ -1,0 +1,35 @@
+# dagster.yaml — local Dagster instance configuration
+# Place this file (or set DAGSTER_HOME) so `dagster dev` picks it up.
+
+telemetry:
+  enabled: false
+
+run_launcher:
+  module: dagster.core.launcher
+  class: DefaultRunLauncher
+
+run_coordinator:
+  module: dagster.core.run_coordinator
+  class: DefaultRunCoordinator
+
+storage:
+  sqlite:
+    base_dir: .dagster
+
+event_log_storage:
+  module: dagster.core.storage.event_log
+  class: SqliteEventLogStorage
+  config:
+    base_dir: .dagster
+
+run_storage:
+  module: dagster.core.storage.runs
+  class: SqliteRunStorage
+  config:
+    base_dir: .dagster
+
+schedule_storage:
+  module: dagster.core.storage.schedules
+  class: SqliteScheduleStorage
+  config:
+    base_dir: .dagster

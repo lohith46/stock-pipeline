@@ -1,9 +1,23 @@
 """
-gold_agent_pnl — P&L, fill rate, and slippage by agent type.
+gold_agent_pnl — daily P&L, trade count, and volume by agent type.
 
 Sources:
-- silver_trades
-- silver_orders
+    silver_trades  — TradeExecuted events with buyer_agent_id / seller_agent_id
+    silver_orders  — OrderPlaced events with agent_id → agent_type mapping
+
+Methodology:
+    1. Build an agent_id → agent_type registry from silver_orders.
+    2. For each trade, attribute:
+         buyer  gets: pnl = -(price × quantity)   [cash outflow]
+         seller gets: pnl = +(price × quantity)   [cash inflow]
+    3. Sum net PnL per agent_type per day.
+       (Positive net PnL = collected more from sells than spent on buys.)
+
+silver_trades fields used:
+    trade_id, symbol, price, quantity, buyer_agent_id, seller_agent_id, timestamp
+
+silver_orders fields used:
+    agent_id, agent_type
 """
 
 import pandas as pd
@@ -17,47 +31,88 @@ from dagster_stock.resources.duckdb_resource import DuckDBResource
 
 @asset(
     name="gold_agent_pnl",
-    description="Daily P&L, fill rate, and avg slippage per agent type.",
+    description="Daily net P&L, trade count, and volume by agent type (retail/institutional/hft/market_maker).",
     deps=[silver_trades, silver_orders],
     required_resource_keys={"storage", "duckdb"},
     metadata={"layer": "gold"},
 )
-def gold_agent_pnl(context: AssetExecutionContext, storage: StorageResource, duckdb: DuckDBResource) -> pd.DataFrame:
+def gold_agent_pnl(
+    context: AssetExecutionContext,
+    storage: StorageResource,
+    duckdb: DuckDBResource,
+) -> pd.DataFrame:
     trades_path = storage.get_parquet_path(layer="silver", table="trades")
     orders_path = storage.get_parquet_path(layer="silver", table="orders")
 
     query = f"""
-        WITH order_fills AS (
-            SELECT
-                o.agent_type,
-                DATE_TRUNC('day', o.timestamp)::DATE            AS trade_date,
-                COUNT(*)                                         AS total_orders,
-                SUM(CASE WHEN o.fill_status = 'filled' THEN 1 ELSE 0 END) AS filled_orders,
-                AVG(o.price)                                     AS avg_order_price
-            FROM read_parquet('{orders_path}/**/*.parquet', hive_partitioning=true) o
-            GROUP BY o.agent_type, DATE_TRUNC('day', o.timestamp)
+        -- Step 1: agent_id → agent_type registry (distinct, prefer non-unknown)
+        WITH agent_map AS (
+            SELECT DISTINCT
+                agent_id,
+                agent_type
+            FROM read_parquet('{orders_path}/**/*.parquet', hive_partitioning=true)
+            WHERE agent_id IS NOT NULL
+              AND agent_type <> 'unknown'
         ),
-        trade_pnl AS (
+
+        -- Step 2: buyer-side contributions (cash outflow = negative PnL)
+        buy_side AS (
+            SELECT
+                t.buyer_agent_id                          AS agent_id,
+                COALESCE(am.agent_type, 'unknown')        AS agent_type,
+                DATE_TRUNC('day', t.timestamp)::DATE      AS trade_date,
+                t.symbol,
+                -(t.price * t.quantity)                   AS pnl,
+                t.quantity                                 AS volume,
+                1                                         AS trade_cnt
+            FROM read_parquet('{trades_path}/**/*.parquet', hive_partitioning=true) t
+            LEFT JOIN agent_map am ON t.buyer_agent_id = am.agent_id
+        ),
+
+        -- Step 3: seller-side contributions (cash inflow = positive PnL)
+        sell_side AS (
+            SELECT
+                t.seller_agent_id                         AS agent_id,
+                COALESCE(am.agent_type, 'unknown')        AS agent_type,
+                DATE_TRUNC('day', t.timestamp)::DATE      AS trade_date,
+                t.symbol,
+                (t.price * t.quantity)                    AS pnl,
+                t.quantity                                 AS volume,
+                1                                         AS trade_cnt
+            FROM read_parquet('{trades_path}/**/*.parquet', hive_partitioning=true) t
+            LEFT JOIN agent_map am ON t.seller_agent_id = am.agent_id
+        ),
+
+        all_sides AS (
+            SELECT * FROM buy_side
+            UNION ALL
+            SELECT * FROM sell_side
+        ),
+
+        -- Step 4: aggregate per agent_type / symbol / day
+        per_agent_symbol AS (
             SELECT
                 agent_type,
-                DATE_TRUNC('day', timestamp)::DATE              AS trade_date,
-                SUM(CASE WHEN side = 'buy'  THEN -price * quantity
-                         WHEN side = 'sell' THEN  price * quantity
-                         ELSE 0 END)                             AS realized_pnl,
-                AVG(ABS(price - mid_price)) / NULLIF(mid_price, 0) * 10000 AS avg_slippage_bps
-            FROM read_parquet('{trades_path}/**/*.parquet', hive_partitioning=true)
-            GROUP BY agent_type, DATE_TRUNC('day', timestamp)
+                symbol,
+                trade_date,
+                SUM(pnl)       AS realized_pnl,
+                SUM(volume)    AS total_volume,
+                SUM(trade_cnt) AS trade_count
+            FROM all_sides
+            GROUP BY agent_type, symbol, trade_date
         )
+
+        -- Step 5: roll up to agent_type / day (across all symbols)
         SELECT
-            COALESCE(f.agent_type, p.agent_type)        AS agent_type,
-            COALESCE(f.trade_date, p.trade_date)        AS trade_date,
-            f.total_orders,
-            f.filled_orders,
-            ROUND(f.filled_orders * 100.0 / NULLIF(f.total_orders, 0), 2) AS fill_rate_pct,
-            p.realized_pnl,
-            p.avg_slippage_bps
-        FROM order_fills f
-        FULL OUTER JOIN trade_pnl p USING (agent_type, trade_date)
+            agent_type,
+            trade_date,
+            SUM(realized_pnl)                           AS realized_pnl,
+            SUM(total_volume)                           AS total_volume,
+            SUM(trade_count)                            AS trade_count,
+            ROUND(AVG(realized_pnl), 4)                 AS avg_pnl_per_symbol,
+            COUNT(DISTINCT symbol)                      AS symbols_traded
+        FROM per_agent_symbol
+        GROUP BY agent_type, trade_date
         ORDER BY trade_date, agent_type
     """
 
