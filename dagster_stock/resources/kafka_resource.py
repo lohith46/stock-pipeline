@@ -26,6 +26,7 @@ class KafkaConsumerResource(ConfigurableResource):
             "group.id": self.group_id,
             "auto.offset.reset": self.auto_offset_reset,
             "enable.auto.commit": False,
+            "allow.auto.create.topics": True,
         })
 
     def poll(self, topic: str, max_records: int = 10_000, timeout_ms: int = 5_000) -> list[dict[str, Any]]:
@@ -43,6 +44,9 @@ class KafkaConsumerResource(ConfigurableResource):
                     break
                 if msg.error():
                     if msg.error().code() == KafkaError._PARTITION_EOF:
+                        break
+                    if msg.error().code() == KafkaError.UNKNOWN_TOPIC_OR_PART:
+                        log.warning("Topic %s does not exist yet, returning empty result", topic)
                         break
                     raise KafkaException(msg.error())
 

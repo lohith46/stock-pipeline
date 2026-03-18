@@ -23,7 +23,6 @@ from dagster_stock.resources.duckdb_resource import DuckDBResource
         "and cross-validated against bronze_market_stats."
     ),
     deps=[silver_trades, bronze_market_stats],
-    required_resource_keys={"storage", "duckdb"},
     metadata={"layer": "gold"},
 )
 def gold_ohlcv(

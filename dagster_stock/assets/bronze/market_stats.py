@@ -14,7 +14,6 @@ TOPIC = "stock.stats"
 @asset(
     name="bronze_market_stats",
     description="Raw market statistics polled from the stock.stats Kafka topic.",
-    required_resource_keys={"kafka", "storage"},
     metadata={"topic": TOPIC, "layer": "bronze"},
 )
 def bronze_market_stats(context: AssetExecutionContext, kafka: KafkaConsumerResource, storage: StorageResource) -> pd.DataFrame:

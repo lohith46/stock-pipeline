@@ -33,7 +33,6 @@ from dagster_stock.resources.duckdb_resource import DuckDBResource
     name="gold_agent_pnl",
     description="Daily net P&L, trade count, and volume by agent type (retail/institutional/hft/market_maker).",
     deps=[silver_trades, silver_orders],
-    required_resource_keys={"storage", "duckdb"},
     metadata={"layer": "gold"},
 )
 def gold_agent_pnl(

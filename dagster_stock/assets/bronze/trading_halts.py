@@ -14,7 +14,6 @@ TOPIC = "stock.halts"
 @asset(
     name="bronze_trading_halts",
     description="Raw trading halt events polled from the stock.halts Kafka topic.",
-    required_resource_keys={"kafka", "storage"},
     metadata={"topic": TOPIC, "layer": "bronze"},
 )
 def bronze_trading_halts(context: AssetExecutionContext, kafka: KafkaConsumerResource, storage: StorageResource) -> pd.DataFrame:

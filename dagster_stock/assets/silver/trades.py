@@ -25,7 +25,6 @@ from dagster_stock.resources.storage_resource import StorageResource
     name="silver_trades",
     description="Cleaned, typed, and deduplicated TradeExecuted events with derived `side`.",
     deps=[bronze_trades],
-    required_resource_keys={"storage"},
     metadata={"layer": "silver"},
 )
 def silver_trades(context: AssetExecutionContext, storage: StorageResource) -> pd.DataFrame:

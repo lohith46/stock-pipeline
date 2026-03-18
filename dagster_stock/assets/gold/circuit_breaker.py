@@ -31,7 +31,6 @@ from dagster_stock.resources.duckdb_resource import DuckDBResource
         "avg price-change trigger, and most common halt reason per symbol per day."
     ),
     deps=[bronze_trading_halts],
-    required_resource_keys={"storage", "duckdb"},
     metadata={"layer": "gold"},
 )
 def gold_circuit_breaker(

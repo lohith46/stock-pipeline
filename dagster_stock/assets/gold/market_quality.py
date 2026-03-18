@@ -19,7 +19,6 @@ from dagster_stock.resources.duckdb_resource import DuckDBResource
     name="gold_market_quality",
     description="Per-symbol market quality: avg spread (bps), depth imbalance, composite score.",
     deps=[silver_trades, silver_quotes],
-    required_resource_keys={"storage", "duckdb"},
     metadata={"layer": "gold"},
 )
 def gold_market_quality(context: AssetExecutionContext, storage: StorageResource, duckdb: DuckDBResource) -> pd.DataFrame:

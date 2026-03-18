@@ -18,7 +18,6 @@ TOPIC = "stock.agents"
 @asset(
     name="bronze_agent_actions",
     description="Raw agent decision events from the stock.agents Kafka topic.",
-    required_resource_keys={"kafka", "storage"},
     metadata={"topic": TOPIC, "layer": "bronze"},
 )
 def bronze_agent_actions(

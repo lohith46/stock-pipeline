@@ -48,7 +48,6 @@ ORDER_TYPE_MAP = {
         "normalised side/order_type/agent_type, and derived fill_status."
     ),
     deps=[bronze_orders],
-    required_resource_keys={"storage"},
     metadata={"layer": "silver"},
 )
 def silver_orders(context: AssetExecutionContext, storage: StorageResource) -> pd.DataFrame:

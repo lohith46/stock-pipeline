@@ -22,7 +22,6 @@ TOPIC = "stock.orders"
         "Raw order events (OrderPlaced + OrderCancelled) from the stock.orders Kafka topic. "
         "Distinguish event types via the injected `event_type` column."
     ),
-    required_resource_keys={"kafka", "storage"},
     metadata={"topic": TOPIC, "layer": "bronze"},
 )
 def bronze_orders(

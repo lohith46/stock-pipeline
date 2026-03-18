@@ -17,7 +17,6 @@ TOPIC = "stock.orderbook"
 @asset(
     name="bronze_order_book",
     description="Raw order-book depth snapshots from the stock.orderbook Kafka topic.",
-    required_resource_keys={"kafka", "storage"},
     metadata={"topic": TOPIC, "layer": "bronze"},
 )
 def bronze_order_book(

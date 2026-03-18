@@ -25,7 +25,6 @@ from dagster_stock.resources.storage_resource import StorageResource
     name="silver_quotes",
     description="Cleaned QuoteUpdate events with bid/ask renamed and microstructure metrics derived.",
     deps=[bronze_quotes],
-    required_resource_keys={"storage"},
     metadata={"layer": "silver"},
 )
 def silver_quotes(context: AssetExecutionContext, storage: StorageResource) -> pd.DataFrame:
