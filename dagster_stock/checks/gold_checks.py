@@ -1,90 +1,115 @@
 """
-Gold layer @asset_check functions.
+Gold layer asset checks using Great Expectations (GX 1.x).
 
-Checks:
-- gold_ohlcv_vwap_deviation       — VWAP within ±20% of (high + low) / 2
-- gold_ohlcv_price_consistency    — high >= close >= open >= low
-- gold_market_quality_freshness   — data must be <= 25 hours old
-- gold_agent_pnl_fill_rate_range  — trade_count is non-negative for all agent-day rows
+One GE suite per gold asset:
+  gold_ohlcv_suite          — OHLC price consistency, VWAP deviation <= 20%
+  gold_market_quality_suite — spread non-negative, trade_count >= 0, freshness SLA
+  gold_agent_pnl_suite      — trade_count and volume non-negative
 """
 
-import pandas as pd
-from datetime import datetime, timezone, timedelta
-from dagster import asset_check, AssetCheckResult, AssetCheckSeverity
+from datetime import datetime, timezone
 
-from dagster_stock.assets.gold.ohlcv import gold_ohlcv
-from dagster_stock.assets.gold.market_quality import gold_market_quality
+import pandas as pd
+from dagster import AssetCheckResult, AssetCheckSeverity, asset_check
+
 from dagster_stock.assets.gold.agent_pnl import gold_agent_pnl
+from dagster_stock.assets.gold.market_quality import gold_market_quality
+from dagster_stock.assets.gold.ohlcv import gold_ohlcv
+from dagster_stock.checks.gx_suites import run_suite
 from dagster_stock.resources.storage_resource import StorageResource
 
 FRESHNESS_SLA_HOURS = 25
 
 
-@asset_check(asset=gold_ohlcv, description="VWAP within ±20% of HL midpoint.")
-def gold_ohlcv_vwap_deviation(storage: StorageResource) -> AssetCheckResult:
+@asset_check(
+    asset=gold_ohlcv,
+    description="GE suite: high >= low, open/close within [low, high], VWAP deviation <= 20%.",
+)
+def gold_ohlcv_suite(storage: StorageResource) -> AssetCheckResult:
     df = storage.read_parquet(layer="gold", table="ohlcv")
-    df["hl_mid"] = (df["high"] + df["low"]) / 2
-    df["vwap_deviation_pct"] = ((df["vwap"] - df["hl_mid"]) / df["hl_mid"] * 100).abs()
-    violations = (df["vwap_deviation_pct"] > 20).sum()
+    if df.empty:
+        return AssetCheckResult(
+            passed=False,
+            severity=AssetCheckSeverity.ERROR,
+            metadata={"reason": "no data"},
+        )
+
+    # Encode pair comparisons as boolean columns for GX
+    df = df.copy()
+    df["_high_gte_low"]    = df["high"] >= df["low"]
+    df["_close_in_range"]  = (df["close"] >= df["low"]) & (df["close"] <= df["high"])
+    df["_open_in_range"]   = (df["open"] >= df["low"])  & (df["open"]  <= df["high"])
+
+    def build(v):
+        v.expect_column_values_to_be_in_set("_high_gte_low",   [True])
+        v.expect_column_values_to_be_in_set("_close_in_range", [True])
+        v.expect_column_values_to_be_in_set("_open_in_range",  [True])
+        v.expect_column_values_to_be_between("vwap_deviation_pct", min_value=0, max_value=20)
+
+    return run_suite(df, "gold_ohlcv", build, severity=AssetCheckSeverity.ERROR)
+
+
+@asset_check(
+    asset=gold_market_quality,
+    description=f"GE suite: spread >= 0, trade_count >= 0, data fresher than {FRESHNESS_SLA_HOURS}h.",
+)
+def gold_market_quality_suite(storage: StorageResource) -> AssetCheckResult:
+    df = storage.read_parquet(layer="gold", table="market_quality")
+    if df.empty:
+        return AssetCheckResult(
+            passed=False,
+            severity=AssetCheckSeverity.ERROR,
+            metadata={"reason": "no data"},
+        )
+
+    max_date = pd.to_datetime(df["trade_date"]).max()
+    age_hours = (
+        datetime.now(tz=timezone.utc) - pd.Timestamp(max_date).tz_localize("UTC")
+    ).total_seconds() / 3600
+    is_fresh = age_hours <= FRESHNESS_SLA_HOURS
+
+    def build(v):
+        v.expect_column_values_to_be_between("avg_spread_bps", min_value=0)
+        v.expect_column_values_to_be_between("trade_count", min_value=0)
+
+    ge_result = run_suite(df, "gold_market_quality", build, severity=AssetCheckSeverity.ERROR)
+
     return AssetCheckResult(
-        passed=bool(violations == 0),
-        severity=AssetCheckSeverity.WARN,
+        passed=bool(ge_result.passed and is_fresh),
+        severity=AssetCheckSeverity.ERROR,
         metadata={
-            "violations": int(violations),
-            "max_deviation_pct": float(df["vwap_deviation_pct"].max()),
+            "expectations_evaluated": ge_result.metadata["expectations_evaluated"],
+            "expectations_failed":    ge_result.metadata["expectations_failed"],
+            "failures":               ge_result.metadata["failures"],
+            "age_hours":              round(age_hours, 2),
+            "sla_hours":              FRESHNESS_SLA_HOURS,
+            "fresh":                  is_fresh,
         },
     )
 
 
-@asset_check(asset=gold_ohlcv, description="OHLC price consistency: high >= close >= open >= low.")
-def gold_ohlcv_price_consistency(storage: StorageResource) -> AssetCheckResult:
-    df = storage.read_parquet(layer="gold", table="ohlcv")
-    violations = (
-        (df["high"] < df["low"])
-        | (df["close"] > df["high"])
-        | (df["close"] < df["low"])
-        | (df["open"] > df["high"])
-        | (df["open"] < df["low"])
-    ).sum()
-    return AssetCheckResult(
-        passed=bool(violations == 0),
-        severity=AssetCheckSeverity.ERROR,
-        metadata={"price_inconsistency_rows": int(violations)},
-    )
-
-
-@asset_check(asset=gold_market_quality, description=f"Gold market quality data fresher than {FRESHNESS_SLA_HOURS}h.")
-def gold_market_quality_freshness(storage: StorageResource) -> AssetCheckResult:
-    df = storage.read_parquet(layer="gold", table="market_quality")
-    if df.empty:
-        return AssetCheckResult(passed=False, severity=AssetCheckSeverity.ERROR,
-                                metadata={"reason": "no data"})
-    max_date = pd.to_datetime(df["trade_date"]).max()
-    age_hours = (datetime.now(tz=timezone.utc) - pd.Timestamp(max_date).tz_localize("UTC")).total_seconds() / 3600
-    return AssetCheckResult(
-        passed=bool(age_hours <= FRESHNESS_SLA_HOURS),
-        severity=AssetCheckSeverity.ERROR,
-        metadata={"age_hours": round(age_hours, 2), "sla_hours": FRESHNESS_SLA_HOURS},
-    )
-
-
-@asset_check(asset=gold_agent_pnl, description="trade_count is non-negative for all agent-day rows.")
-def gold_agent_pnl_fill_rate_range(storage: StorageResource) -> AssetCheckResult:
+@asset_check(
+    asset=gold_agent_pnl,
+    description="GE suite: trade_count and total_volume non-negative for all agent-day rows.",
+)
+def gold_agent_pnl_suite(storage: StorageResource) -> AssetCheckResult:
     df = storage.read_parquet(layer="gold", table="agent_pnl")
     if df.empty:
-        return AssetCheckResult(passed=False, severity=AssetCheckSeverity.ERROR,
-                                metadata={"reason": "no data"})
-    invalid = (df["trade_count"] < 0).sum()
-    return AssetCheckResult(
-        passed=bool(invalid == 0),
-        severity=AssetCheckSeverity.ERROR,
-        metadata={"negative_trade_count_rows": int(invalid), "total_rows": len(df)},
-    )
+        return AssetCheckResult(
+            passed=False,
+            severity=AssetCheckSeverity.ERROR,
+            metadata={"reason": "no data"},
+        )
+
+    def build(v):
+        v.expect_column_values_to_be_between("trade_count", min_value=0)
+        v.expect_column_values_to_be_between("total_volume", min_value=0)
+
+    return run_suite(df, "gold_agent_pnl", build, severity=AssetCheckSeverity.ERROR)
 
 
 gold_checks = [
-    gold_ohlcv_vwap_deviation,
-    gold_ohlcv_price_consistency,
-    gold_market_quality_freshness,
-    gold_agent_pnl_fill_rate_range,
+    gold_ohlcv_suite,
+    gold_market_quality_suite,
+    gold_agent_pnl_suite,
 ]

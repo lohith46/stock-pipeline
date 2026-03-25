@@ -1,74 +1,57 @@
 """
-silver_trades — cleaned, typed, and validated TradeExecuted records.
+silver_trades — validated TradeExecuted records promoted from the staging layer.
 
-Source fields from mock-stock's TradeExecuted event:
-    trade_id, symbol, price, quantity, is_aggressive_buy,
-    buyer_agent_id, seller_agent_id, buy_order_id, sell_order_id, timestamp
+Source: stg_trades (staging/trades Parquet)
 
-Transformations:
-    - Deduplicate on (trade_id, symbol, timestamp)
-    - Cast price / quantity to float64
-    - Drop rows with null price, quantity, or symbol
-    - Reject rows where price <= 0 or quantity <= 0
-    - Derive `side`: "buy" if is_aggressive_buy else "sell"
-    - Parse timestamp to UTC datetime
+Only rows where _validation_status == "valid" AND _is_duplicate == False are
+included.  All original bronze columns are carried forward alongside the
+normalized / cast columns added in staging, so the transformation chain remains
+visible for debugging.
+
+Key columns present in the output
+----------------------------------
+Original bronze  : trade_id, symbol, price, quantity, is_aggressive_buy,
+                   buyer_agent_id, seller_agent_id, buy_order_id, sell_order_id,
+                   timestamp, event_type
+From staging     : price_cast, quantity_cast, timestamp_utc, side_normalized,
+                   _is_duplicate, _validation_status, _invalid_reasons
 """
 
 import pandas as pd
 from dagster import asset, AssetExecutionContext
 
-from dagster_stock.assets.bronze.trades import bronze_trades
+from dagster_stock.assets.staging.trades import stg_trades
 from dagster_stock.resources.storage_resource import StorageResource
 
 
 @asset(
     name="silver_trades",
-    description="Cleaned, typed, and deduplicated TradeExecuted events with derived `side`.",
-    deps=[bronze_trades],
+    description=(
+        "Validated TradeExecuted records with original bronze columns preserved "
+        "alongside normalized / cast columns from the staging layer."
+    ),
+    deps=[stg_trades],
     metadata={"layer": "silver"},
 )
 def silver_trades(context: AssetExecutionContext, storage: StorageResource) -> pd.DataFrame:
-    df: pd.DataFrame = storage.read_parquet(layer="bronze", table="trades")
+    df: pd.DataFrame = storage.read_parquet(layer="staging", table="trades")
 
     if df.empty:
-        context.log.warning("No bronze trades to process.")
+        context.log.warning("No staged trades to promote.")
         return pd.DataFrame()
 
-    # Keep only TradeExecuted rows (the bridge injects event_type)
-    if "event_type" in df.columns:
-        df = df[df["event_type"] == "TradeExecuted"].copy()
+    is_valid = df["_validation_status"] == "valid"
+    is_not_dup = ~df["_is_duplicate"].astype(bool) if "_is_duplicate" in df.columns else pd.Series(True, index=df.index)
 
-    # 1. Deduplication
-    before = len(df)
-    df = df.drop_duplicates(subset=["trade_id", "symbol", "timestamp"])
-    context.log.info("Dedup removed %d rows", before - len(df))
+    silver = df[is_valid & is_not_dup].reset_index(drop=True)
 
-    # 2. Type casting
-    df["price"]     = pd.to_numeric(df["price"],    errors="coerce")
-    df["quantity"]  = pd.to_numeric(df["quantity"], errors="coerce")
-    df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True, errors="coerce")
-
-    # 3. Reject invalid rows
-    invalid_mask = (
-        df["price"].isna()
-        | df["quantity"].isna()
-        | df["symbol"].isna()
-        | (df["price"] <= 0)
-        | (df["quantity"] <= 0)
+    context.log.info(
+        "silver_trades: %d promoted from %d staged  (%d invalid  %d duplicate skipped)",
+        len(silver),
+        len(df),
+        (~is_valid).sum(),
+        (~is_not_dup).sum(),
     )
-    rejected = df[invalid_mask]
-    df = df[~invalid_mask].reset_index(drop=True)
 
-    if not rejected.empty:
-        context.log.warning("Rejected %d invalid trade rows", len(rejected))
-        storage.write_parquet(rejected, layer="rejected", table="trades", context=context)
-
-    # 4. Derive side from is_aggressive_buy (True → aggressive buyer initiated the trade)
-    if "is_aggressive_buy" in df.columns:
-        df["side"] = df["is_aggressive_buy"].map({True: "buy", False: "sell"})
-    else:
-        df["side"] = "unknown"
-
-    context.log.info("Silver trades: %d clean records", len(df))
-    storage.write_parquet(df, layer="silver", table="trades", context=context)
-    return df
+    storage.write_parquet(silver, layer="silver", table="trades", context=context)
+    return silver

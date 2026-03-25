@@ -1,3 +1,3 @@
-from dagster_stock.assets import bronze, silver, gold
+from dagster_stock.assets import bronze, staging, invalid, reference, silver, gold
 
-__all__ = ["bronze", "silver", "gold"]
+__all__ = ["bronze", "staging", "invalid", "reference", "silver", "gold"]

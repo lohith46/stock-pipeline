@@ -55,7 +55,7 @@ class KafkaConsumerResource(ConfigurableResource):
                 except (json.JSONDecodeError, UnicodeDecodeError) as exc:
                     log.warning("Failed to decode message: %s", exc)
 
-            if records:
+            if records and consumer.assignment():
                 consumer.commit(asynchronous=False)
                 log.info("Committed offsets after polling %d records from %s", len(records), topic)
         finally:

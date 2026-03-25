@@ -59,7 +59,7 @@ def gold_agent_pnl(
             SELECT
                 t.buyer_agent_id                          AS agent_id,
                 COALESCE(am.agent_type, 'unknown')        AS agent_type,
-                DATE_TRUNC('day', t.timestamp)::DATE      AS trade_date,
+                DATE_TRUNC('day', t.timestamp::TIMESTAMPTZ)::DATE      AS trade_date,
                 t.symbol,
                 -(t.price * t.quantity)                   AS pnl,
                 t.quantity                                 AS volume,
@@ -73,7 +73,7 @@ def gold_agent_pnl(
             SELECT
                 t.seller_agent_id                         AS agent_id,
                 COALESCE(am.agent_type, 'unknown')        AS agent_type,
-                DATE_TRUNC('day', t.timestamp)::DATE      AS trade_date,
+                DATE_TRUNC('day', t.timestamp::TIMESTAMPTZ)::DATE      AS trade_date,
                 t.symbol,
                 (t.price * t.quantity)                    AS pnl,
                 t.quantity                                 AS volume,

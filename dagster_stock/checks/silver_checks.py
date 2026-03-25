@@ -1,140 +1,102 @@
 """
-Silver layer @asset_check functions.
+Silver layer asset checks using Great Expectations (GX 1.x).
 
-Checks:
-- silver_trades_no_duplicates      — (trade_id, symbol, timestamp) must be unique
-- silver_trades_no_nulls           — critical columns must have no nulls
-- silver_trades_price_bounds       — price within [0.01, 1_000_000]
-- silver_trades_timestamp_order    — timestamps non-decreasing per symbol
-- silver_trades_side_valid         — side in {"buy", "sell"}
-- silver_quotes_spread_non_negative — spread_bps >= 0
-- silver_orders_fill_status_valid  — fill_status only contains known values
-- silver_orders_agent_type_valid   — agent_type only contains known values
+One GE suite per silver asset:
+  silver_trades_suite  — uniqueness, no nulls, price bounds, side validity
+  silver_quotes_suite  — spread non-negative, bid/ask positive and ordered
+  silver_orders_suite  — fill_status and agent_type within known value sets
 """
 
-import pandas as pd
-from dagster import asset_check, AssetCheckResult, AssetCheckSeverity
+from dagster import AssetCheckResult, AssetCheckSeverity, asset_check
 
-from dagster_stock.assets.silver.trades import silver_trades
-from dagster_stock.assets.silver.quotes import silver_quotes
 from dagster_stock.assets.silver.orders import silver_orders
+from dagster_stock.assets.silver.quotes import silver_quotes
+from dagster_stock.assets.silver.trades import silver_trades
+from dagster_stock.checks.gx_suites import run_suite
 from dagster_stock.resources.storage_resource import StorageResource
 
-KNOWN_FILL_STATUSES = {"open", "cancelled"}
-KNOWN_AGENT_TYPES   = {"retail", "institutional", "market_maker", "hft", "unknown"}
-KNOWN_SIDES         = {"buy", "sell"}
+KNOWN_SIDES         = ["buy", "sell"]
+KNOWN_FILL_STATUSES = ["open", "cancelled"]
+KNOWN_AGENT_TYPES   = ["retail", "institutional", "market_maker", "hft", "unknown"]
 
 
-# ── silver_trades checks ──────────────────────────────────────────────────────
-
-@asset_check(asset=silver_trades, description="No duplicate (trade_id, symbol, timestamp) rows.")
-def silver_trades_no_duplicates(storage: StorageResource) -> AssetCheckResult:
+@asset_check(
+    asset=silver_trades,
+    description="GE suite: no duplicates, no nulls on critical columns, price bounds, side validity.",
+)
+def silver_trades_suite(storage: StorageResource) -> AssetCheckResult:
     df = storage.read_parquet(layer="silver", table="trades")
-    dupe_count = df.duplicated(subset=["trade_id", "symbol", "timestamp"]).sum()
-    return AssetCheckResult(
-        passed=bool(dupe_count == 0),
-        severity=AssetCheckSeverity.ERROR,
-        metadata={"duplicate_count": int(dupe_count)},
+    if df.empty:
+        return AssetCheckResult(
+            passed=False,
+            severity=AssetCheckSeverity.ERROR,
+            metadata={"reason": "no data"},
+        )
+
+    # Compound uniqueness: encode as a single key column for GX
+    df = df.copy()
+    df["_trade_key"] = (
+        df["trade_id"].astype(str) + "|" + df["symbol"] + "|" + df["timestamp"].astype(str)
     )
 
+    def build(v):
+        v.expect_column_values_to_be_unique("_trade_key")
+        for col in ["trade_id", "symbol", "price", "quantity", "timestamp"]:
+            v.expect_column_values_to_not_be_null(col)
+        v.expect_column_values_to_be_between("price", min_value=0.01, max_value=1_000_000)
+        v.expect_column_values_to_be_in_set("side", KNOWN_SIDES)
 
-@asset_check(asset=silver_trades, description="Critical columns contain no nulls.")
-def silver_trades_no_nulls(storage: StorageResource) -> AssetCheckResult:
-    df = storage.read_parquet(layer="silver", table="trades")
-    null_counts = df[["trade_id", "symbol", "price", "quantity", "timestamp"]].isnull().sum().to_dict()
-    total_nulls = sum(null_counts.values())
-    return AssetCheckResult(
-        passed=bool(total_nulls == 0),
-        severity=AssetCheckSeverity.ERROR,
-        metadata={k: int(v) for k, v in null_counts.items()},
-    )
+    return run_suite(df, "silver_trades", build, severity=AssetCheckSeverity.ERROR)
 
 
-@asset_check(asset=silver_trades, description="Price within [0.01, 1_000_000].")
-def silver_trades_price_bounds(storage: StorageResource) -> AssetCheckResult:
-    df = storage.read_parquet(layer="silver", table="trades")
-    out_of_bounds = ((df["price"] < 0.01) | (df["price"] > 1_000_000)).sum()
-    return AssetCheckResult(
-        passed=bool(out_of_bounds == 0),
-        severity=AssetCheckSeverity.WARN,
-        metadata={"out_of_bounds_count": int(out_of_bounds)},
-    )
-
-
-@asset_check(asset=silver_trades, description="Timestamps non-decreasing per symbol.")
-def silver_trades_timestamp_order(storage: StorageResource) -> AssetCheckResult:
-    df = storage.read_parquet(layer="silver", table="trades")
-    violations = (
-        df.sort_values(["symbol", "timestamp"])
-          .groupby("symbol")["timestamp"]
-          .apply(lambda s: (s.diff() < pd.Timedelta(0)).sum())
-          .sum()
-    )
-    return AssetCheckResult(
-        passed=bool(violations == 0),
-        severity=AssetCheckSeverity.WARN,
-        metadata={"out_of_order_rows": int(violations)},
-    )
-
-
-@asset_check(asset=silver_trades, description="side column only contains 'buy' or 'sell'.")
-def silver_trades_side_valid(storage: StorageResource) -> AssetCheckResult:
-    df = storage.read_parquet(layer="silver", table="trades")
-    if "side" not in df.columns:
-        return AssetCheckResult(passed=False, severity=AssetCheckSeverity.ERROR,
-                                metadata={"reason": "side column missing"})
-    invalid = (~df["side"].isin(KNOWN_SIDES)).sum()
-    return AssetCheckResult(
-        passed=bool(invalid == 0),
-        severity=AssetCheckSeverity.ERROR,
-        metadata={"invalid_side_count": int(invalid)},
-    )
-
-
-# ── silver_quotes checks ──────────────────────────────────────────────────────
-
-@asset_check(asset=silver_quotes, description="spread_bps >= 0 for all quotes.")
-def silver_quotes_spread_non_negative(storage: StorageResource) -> AssetCheckResult:
+@asset_check(
+    asset=silver_quotes,
+    description="GE suite: spread_bps non-negative, bid/ask positive, ask > bid.",
+)
+def silver_quotes_suite(storage: StorageResource) -> AssetCheckResult:
     df = storage.read_parquet(layer="silver", table="quotes")
-    neg_spread = (df["spread_bps"] < 0).sum()
-    return AssetCheckResult(
-        passed=bool(neg_spread == 0),
-        severity=AssetCheckSeverity.ERROR,
-        metadata={"negative_spread_count": int(neg_spread)},
-    )
+    if df.empty:
+        return AssetCheckResult(
+            passed=False,
+            severity=AssetCheckSeverity.ERROR,
+            metadata={"reason": "no data"},
+        )
+
+    # Encode ask > bid as a boolean column for GX
+    df = df.copy()
+    df["_ask_gt_bid"] = df["ask"] > df["bid"]
+
+    def build(v):
+        v.expect_column_values_to_be_between("spread_bps", min_value=0)
+        v.expect_column_values_to_be_between("bid", min_value=0.01)
+        v.expect_column_values_to_be_between("ask", min_value=0.01)
+        v.expect_column_values_to_be_in_set("_ask_gt_bid", [True])
+
+    return run_suite(df, "silver_quotes", build, severity=AssetCheckSeverity.ERROR)
 
 
-# ── silver_orders checks ──────────────────────────────────────────────────────
-
-@asset_check(asset=silver_orders, description="fill_status only contains known values.")
-def silver_orders_fill_status_valid(storage: StorageResource) -> AssetCheckResult:
+@asset_check(
+    asset=silver_orders,
+    description="GE suite: fill_status and agent_type within known value sets.",
+)
+def silver_orders_suite(storage: StorageResource) -> AssetCheckResult:
     df = storage.read_parquet(layer="silver", table="orders")
-    unknown = (~df["fill_status"].isin(KNOWN_FILL_STATUSES)).sum()
-    return AssetCheckResult(
-        passed=bool(unknown == 0),
-        severity=AssetCheckSeverity.WARN,
-        metadata={"unknown_fill_status_count": int(unknown)},
-    )
+    if df.empty:
+        return AssetCheckResult(
+            passed=False,
+            severity=AssetCheckSeverity.ERROR,
+            metadata={"reason": "no data"},
+        )
 
+    def build(v):
+        v.expect_column_values_to_be_in_set("fill_status", KNOWN_FILL_STATUSES)
+        v.expect_column_values_to_be_in_set("agent_type", KNOWN_AGENT_TYPES)
 
-@asset_check(asset=silver_orders, description="agent_type only contains known values.")
-def silver_orders_agent_type_valid(storage: StorageResource) -> AssetCheckResult:
-    df = storage.read_parquet(layer="silver", table="orders")
-    unknown = (~df["agent_type"].isin(KNOWN_AGENT_TYPES)).sum()
-    return AssetCheckResult(
-        passed=bool(unknown == 0),
-        severity=AssetCheckSeverity.WARN,
-        metadata={"unknown_agent_type_count": int(unknown)},
-    )
+    return run_suite(df, "silver_orders", build, severity=AssetCheckSeverity.WARN)
 
 
 silver_checks = [
-    silver_trades_no_duplicates,
-    silver_trades_no_nulls,
-    silver_trades_price_bounds,
-    silver_trades_timestamp_order,
-    silver_trades_side_valid,
-    silver_quotes_spread_non_negative,
-    silver_orders_fill_status_valid,
-    silver_orders_agent_type_valid,
+    silver_trades_suite,
+    silver_quotes_suite,
+    silver_orders_suite,
 ]
