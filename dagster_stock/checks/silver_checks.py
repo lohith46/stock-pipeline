@@ -32,7 +32,7 @@ def silver_trades_no_duplicates(storage: StorageResource) -> AssetCheckResult:
     df = storage.read_parquet(layer="silver", table="trades")
     dupe_count = df.duplicated(subset=["trade_id", "symbol", "timestamp"]).sum()
     return AssetCheckResult(
-        passed=dupe_count == 0,
+        passed=bool(dupe_count == 0),
         severity=AssetCheckSeverity.ERROR,
         metadata={"duplicate_count": int(dupe_count)},
     )
@@ -44,7 +44,7 @@ def silver_trades_no_nulls(storage: StorageResource) -> AssetCheckResult:
     null_counts = df[["trade_id", "symbol", "price", "quantity", "timestamp"]].isnull().sum().to_dict()
     total_nulls = sum(null_counts.values())
     return AssetCheckResult(
-        passed=total_nulls == 0,
+        passed=bool(total_nulls == 0),
         severity=AssetCheckSeverity.ERROR,
         metadata={k: int(v) for k, v in null_counts.items()},
     )
@@ -55,7 +55,7 @@ def silver_trades_price_bounds(storage: StorageResource) -> AssetCheckResult:
     df = storage.read_parquet(layer="silver", table="trades")
     out_of_bounds = ((df["price"] < 0.01) | (df["price"] > 1_000_000)).sum()
     return AssetCheckResult(
-        passed=out_of_bounds == 0,
+        passed=bool(out_of_bounds == 0),
         severity=AssetCheckSeverity.WARN,
         metadata={"out_of_bounds_count": int(out_of_bounds)},
     )
@@ -71,7 +71,7 @@ def silver_trades_timestamp_order(storage: StorageResource) -> AssetCheckResult:
           .sum()
     )
     return AssetCheckResult(
-        passed=violations == 0,
+        passed=bool(violations == 0),
         severity=AssetCheckSeverity.WARN,
         metadata={"out_of_order_rows": int(violations)},
     )
@@ -85,7 +85,7 @@ def silver_trades_side_valid(storage: StorageResource) -> AssetCheckResult:
                                 metadata={"reason": "side column missing"})
     invalid = (~df["side"].isin(KNOWN_SIDES)).sum()
     return AssetCheckResult(
-        passed=invalid == 0,
+        passed=bool(invalid == 0),
         severity=AssetCheckSeverity.ERROR,
         metadata={"invalid_side_count": int(invalid)},
     )
@@ -98,7 +98,7 @@ def silver_quotes_spread_non_negative(storage: StorageResource) -> AssetCheckRes
     df = storage.read_parquet(layer="silver", table="quotes")
     neg_spread = (df["spread_bps"] < 0).sum()
     return AssetCheckResult(
-        passed=neg_spread == 0,
+        passed=bool(neg_spread == 0),
         severity=AssetCheckSeverity.ERROR,
         metadata={"negative_spread_count": int(neg_spread)},
     )
@@ -111,7 +111,7 @@ def silver_orders_fill_status_valid(storage: StorageResource) -> AssetCheckResul
     df = storage.read_parquet(layer="silver", table="orders")
     unknown = (~df["fill_status"].isin(KNOWN_FILL_STATUSES)).sum()
     return AssetCheckResult(
-        passed=unknown == 0,
+        passed=bool(unknown == 0),
         severity=AssetCheckSeverity.WARN,
         metadata={"unknown_fill_status_count": int(unknown)},
     )
@@ -122,7 +122,7 @@ def silver_orders_agent_type_valid(storage: StorageResource) -> AssetCheckResult
     df = storage.read_parquet(layer="silver", table="orders")
     unknown = (~df["agent_type"].isin(KNOWN_AGENT_TYPES)).sum()
     return AssetCheckResult(
-        passed=unknown == 0,
+        passed=bool(unknown == 0),
         severity=AssetCheckSeverity.WARN,
         metadata={"unknown_agent_type_count": int(unknown)},
     )

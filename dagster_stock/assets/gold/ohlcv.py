@@ -37,29 +37,29 @@ def gold_ohlcv(
         WITH trade_bars AS (
             SELECT
                 symbol,
-                DATE_TRUNC('day', timestamp)::DATE                  AS trade_date,
-                FIRST(price ORDER BY timestamp)                     AS open,
-                MAX(price)                                          AS high,
-                MIN(price)                                          AS low,
-                LAST(price ORDER BY timestamp)                      AS close,
-                SUM(quantity)                                       AS volume,
-                SUM(price * quantity) / NULLIF(SUM(quantity), 0)   AS vwap,
-                COUNT(*)                                            AS trade_count
+                DATE_TRUNC('day', timestamp::TIMESTAMPTZ)::DATE                  AS trade_date,
+                FIRST(price ORDER BY timestamp::TIMESTAMPTZ)                     AS open,
+                MAX(price)                                                        AS high,
+                MIN(price)                                                        AS low,
+                LAST(price ORDER BY timestamp::TIMESTAMPTZ)                      AS close,
+                SUM(quantity)                                                     AS volume,
+                SUM(price * quantity) / NULLIF(SUM(quantity), 0)                 AS vwap,
+                COUNT(*)                                                          AS trade_count
             FROM read_parquet('{trades_path}/**/*.parquet', hive_partitioning=true)
-            GROUP BY symbol, DATE_TRUNC('day', timestamp)
+            GROUP BY symbol, DATE_TRUNC('day', timestamp::TIMESTAMPTZ)
         ),
         stats_bars AS (
             SELECT
                 symbol,
-                DATE_TRUNC('day', timestamp)::DATE  AS trade_date,
-                vwap                                AS stats_vwap,
-                volume                              AS stats_volume
+                DATE_TRUNC('day', timestamp::TIMESTAMPTZ)::DATE  AS trade_date,
+                vwap                                             AS stats_vwap,
+                volume                                           AS stats_volume
             FROM read_parquet('{stats_path}/**/*.parquet', hive_partitioning=true)
             WHERE event_type = 'MarketStats'
               AND vwap IS NOT NULL
             QUALIFY ROW_NUMBER() OVER (
-                PARTITION BY symbol, DATE_TRUNC('day', timestamp)
-                ORDER BY timestamp DESC
+                PARTITION BY symbol, DATE_TRUNC('day', timestamp::TIMESTAMPTZ)
+                ORDER BY timestamp::TIMESTAMPTZ DESC
             ) = 1   -- latest stats snapshot per symbol-day
         )
         SELECT

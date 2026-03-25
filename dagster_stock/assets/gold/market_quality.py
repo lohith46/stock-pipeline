@@ -29,21 +29,21 @@ def gold_market_quality(context: AssetExecutionContext, storage: StorageResource
         WITH quote_stats AS (
             SELECT
                 symbol,
-                DATE_TRUNC('day', timestamp)::DATE  AS trade_date,
+                DATE_TRUNC('day', timestamp::TIMESTAMPTZ)::DATE  AS trade_date,
                 AVG(spread_bps)                     AS avg_spread_bps,
                 AVG(ABS(depth_imbalance))           AS avg_depth_imbalance,
                 COUNT(*)                            AS quote_count
             FROM read_parquet('{quotes_path}/**/*.parquet', hive_partitioning=true)
-            GROUP BY symbol, DATE_TRUNC('day', timestamp)
+            GROUP BY symbol, DATE_TRUNC('day', timestamp::TIMESTAMPTZ)
         ),
         trade_stats AS (
             SELECT
                 symbol,
-                DATE_TRUNC('day', timestamp)::DATE  AS trade_date,
+                DATE_TRUNC('day', timestamp::TIMESTAMPTZ)::DATE  AS trade_date,
                 COUNT(*)                            AS trade_count,
                 SUM(quantity)                       AS total_volume
             FROM read_parquet('{trades_path}/**/*.parquet', hive_partitioning=true)
-            GROUP BY symbol, DATE_TRUNC('day', timestamp)
+            GROUP BY symbol, DATE_TRUNC('day', timestamp::TIMESTAMPTZ)
         )
         SELECT
             q.symbol,

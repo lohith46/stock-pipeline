@@ -16,6 +16,7 @@ Methodology:
       avg price impact at halt trigger.
 """
 
+import duckdb as duckdb_lib
 import pandas as pd
 from dagster import asset, AssetExecutionContext
 
@@ -101,7 +102,13 @@ def gold_circuit_breaker(
         ORDER BY halt_date, symbol
     """
 
-    df = duckdb.query(query)
+    try:
+        df = duckdb.query(query)
+    except duckdb_lib.IOException:
+        context.log.warning(
+            "No bronze trading_halts data found at %s — returning empty DataFrame", halts_path
+        )
+        return pd.DataFrame()
     context.log.info("Gold circuit breaker: %d symbol-day rows", len(df))
     storage.write_parquet(df, layer="gold", table="circuit_breaker", context=context)
     return df

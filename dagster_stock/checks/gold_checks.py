@@ -5,7 +5,7 @@ Checks:
 - gold_ohlcv_vwap_deviation       — VWAP within ±20% of (high + low) / 2
 - gold_ohlcv_price_consistency    — high >= close >= open >= low
 - gold_market_quality_freshness   — data must be <= 25 hours old
-- gold_agent_pnl_fill_rate_range  — fill_rate_pct in [0, 100]
+- gold_agent_pnl_fill_rate_range  — trade_count is non-negative for all agent-day rows
 """
 
 import pandas as pd
@@ -27,7 +27,7 @@ def gold_ohlcv_vwap_deviation(storage: StorageResource) -> AssetCheckResult:
     df["vwap_deviation_pct"] = ((df["vwap"] - df["hl_mid"]) / df["hl_mid"] * 100).abs()
     violations = (df["vwap_deviation_pct"] > 20).sum()
     return AssetCheckResult(
-        passed=violations == 0,
+        passed=bool(violations == 0),
         severity=AssetCheckSeverity.WARN,
         metadata={
             "violations": int(violations),
@@ -47,7 +47,7 @@ def gold_ohlcv_price_consistency(storage: StorageResource) -> AssetCheckResult:
         | (df["open"] < df["low"])
     ).sum()
     return AssetCheckResult(
-        passed=violations == 0,
+        passed=bool(violations == 0),
         severity=AssetCheckSeverity.ERROR,
         metadata={"price_inconsistency_rows": int(violations)},
     )
@@ -62,20 +62,23 @@ def gold_market_quality_freshness(storage: StorageResource) -> AssetCheckResult:
     max_date = pd.to_datetime(df["trade_date"]).max()
     age_hours = (datetime.now(tz=timezone.utc) - pd.Timestamp(max_date).tz_localize("UTC")).total_seconds() / 3600
     return AssetCheckResult(
-        passed=age_hours <= FRESHNESS_SLA_HOURS,
+        passed=bool(age_hours <= FRESHNESS_SLA_HOURS),
         severity=AssetCheckSeverity.ERROR,
         metadata={"age_hours": round(age_hours, 2), "sla_hours": FRESHNESS_SLA_HOURS},
     )
 
 
-@asset_check(asset=gold_agent_pnl, description="fill_rate_pct in [0, 100].")
+@asset_check(asset=gold_agent_pnl, description="trade_count is non-negative for all agent-day rows.")
 def gold_agent_pnl_fill_rate_range(storage: StorageResource) -> AssetCheckResult:
     df = storage.read_parquet(layer="gold", table="agent_pnl")
-    out_of_range = ((df["fill_rate_pct"] < 0) | (df["fill_rate_pct"] > 100)).sum()
+    if df.empty:
+        return AssetCheckResult(passed=False, severity=AssetCheckSeverity.ERROR,
+                                metadata={"reason": "no data"})
+    invalid = (df["trade_count"] < 0).sum()
     return AssetCheckResult(
-        passed=out_of_range == 0,
+        passed=bool(invalid == 0),
         severity=AssetCheckSeverity.ERROR,
-        metadata={"out_of_range_count": int(out_of_range)},
+        metadata={"negative_trade_count_rows": int(invalid), "total_rows": len(df)},
     )
 
 

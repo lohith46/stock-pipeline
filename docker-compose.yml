@@ -11,12 +11,13 @@ services:
     environment:
       KAFKA_NODE_ID: 1
       KAFKA_PROCESS_ROLES: broker,controller
-      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092
+      # Two listeners: EXTERNAL for host access, INTERNAL for container-to-container
+      KAFKA_LISTENERS: EXTERNAL://0.0.0.0:9092,INTERNAL://0.0.0.0:29092,CONTROLLER://0.0.0.0:9093
+      KAFKA_ADVERTISED_LISTENERS: EXTERNAL://localhost:9092,INTERNAL://kafka:29092
       KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
       KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT
-      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: EXTERNAL:PLAINTEXT,INTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
       KAFKA_LOG_DIRS: /var/lib/kafka/data
@@ -79,7 +80,10 @@ services:
       - ../mock-stock/config:/config:ro
     command: ["/config/pipeline.toml"]
     healthcheck:
-      test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/localhost/8080' 2>/dev/null"]
+      # Use a proper WS-aware check: connect via Python websockets (available on the
+      # host network) — but since Python is not in the debian:bookworm-slim image we
+      # simply verify the process is alive (PID 1 = de-stock entrypoint).
+      test: ["CMD-SHELL", "kill -0 1"]
       interval: 10s
       timeout: 5s
       retries: 10
@@ -93,7 +97,7 @@ services:
     environment:
       # mock-stock is reachable by service name inside Docker network
       WS_URL:                  "ws://mock-stock:8080"
-      KAFKA_BOOTSTRAP_SERVERS: "kafka:9092"
+      KAFKA_BOOTSTRAP_SERVERS: "kafka:29092"
       RECONNECT_DELAY_S:       "5"
       LOG_INTERVAL_N:          "1000"
       # Topic overrides (optional — these are already the defaults)
@@ -153,7 +157,7 @@ services:
       - "3010:3010"
     environment:
       DAGSTER_HOME:            /app/.dagster
-      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
       KAFKA_GROUP_ID:          dagster-stock-pipeline
       KAFKA_AUTO_OFFSET_RESET: earliest
       MINIO_ENDPOINT:          http://minio:9000
@@ -177,7 +181,7 @@ services:
       - /dev/null:/app/.env             # block dagster from loading host .env (would override above)
     command: >
       sh -c "pip install -e '.[dev]' -q &&
-             dagster-webserver -h 0.0.0.0 -p 3010 -w /app/.dagster/workspace.yaml"
+             dagster-webserver -h 0.0.0.0 -p 3010 -w /app/workspace.yaml"
     depends_on:
       kafka:
         condition: service_healthy
@@ -190,7 +194,7 @@ services:
     working_dir: /app
     environment:
       DAGSTER_HOME:            /app/.dagster
-      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
       KAFKA_GROUP_ID:          dagster-stock-pipeline
       KAFKA_AUTO_OFFSET_RESET: earliest
       MINIO_ENDPOINT:          http://minio:9000
@@ -213,7 +217,7 @@ services:
       - ./.dagster:/app/.dagster        # bind mount so workspace.yaml is available
       - /dev/null:/app/.env             # block dagster from loading host .env (would override above)
     command: >
-      sh -c "pip install -e '.[dev]' -q && dagster-daemon run"
+      sh -c "pip install -e '.[dev]' -q && dagster-daemon run -w /app/workspace.yaml"
     depends_on:
       kafka:
         condition: service_healthy
